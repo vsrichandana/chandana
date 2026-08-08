@@ -2,6 +2,7 @@ import os
 import io
 import sys
 import traceback
+
 from typing import TypedDict, List, Optional
 
 from fastapi import FastAPI
@@ -13,30 +14,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langgraph.graph import StateGraph, START, END
 
-
-# ============================================================
-# 1. FASTAPI APPLICATION
-# ============================================================
-
-app = FastAPI(title="LangGraph Coding Agent")
-formatted_agent_chain = (
-    RunnableLambda(format_for_agent)
-    | agent
-    | RunnableLambda(extract_text_response)
-).with_types(input_type=AgentInput, output_type=str)
-
-# --- 3. FastAPI App ---
-app = FastAPI(title="Indian Weather & Cinema Agent API")
-
-add_routes(
-    app,
-    formatted_agent_chain,
-    path="/agent",
-    playground_type="default")
+from langserve import add_routes
 
 
 # ============================================================
-# 2. LLM INITIALIZATION
+# 1. LLM INITIALIZATION
 # ============================================================
 
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
@@ -51,7 +33,7 @@ llm = ChatGoogleGenerativeAI(
 
 
 # ============================================================
-# 3. STATE DEFINITION
+# 2. STATE DEFINITION
 # ============================================================
 
 class CrewState(TypedDict):
@@ -62,7 +44,7 @@ class CrewState(TypedDict):
 
 
 # ============================================================
-# 4. TOOLS
+# 3. TOOLS
 # ============================================================
 
 @tool
@@ -85,6 +67,7 @@ def run_python_code(code: str) -> str:
 
     try:
         local_scope = {}
+
         exec(clean_code, {}, local_scope)
 
         result = new_stdout.getvalue()
@@ -116,13 +99,10 @@ def generate_test_cases(task_description: str) -> str:
 
 
 # ============================================================
-# 5. GRAPH NODES
+# 4. GRAPH NODES
 # ============================================================
 
 def task_input_node(state: CrewState):
-    """
-    Receives the coding task from the API request.
-    """
 
     return {
         "next_step": "developer"
@@ -130,10 +110,6 @@ def task_input_node(state: CrewState):
 
 
 def real_time_developer(state: CrewState):
-    """
-    Developer node:
-    Uses Gemini to generate Python code for the requested task.
-    """
 
     print("\n" + "=" * 50)
     print("              DEVELOPER ROLE")
@@ -153,9 +129,11 @@ def real_time_developer(state: CrewState):
     content = response.content
 
     if isinstance(content, list):
+
         parts = []
 
         for item in content:
+
             if isinstance(item, dict):
                 parts.append(item.get("text", ""))
             else:
@@ -174,12 +152,6 @@ def real_time_developer(state: CrewState):
 
 
 def real_time_tester(state: CrewState):
-    """
-    Tester node:
-    1. Generates test scenarios.
-    2. Executes the generated Python code.
-    3. Creates a report.
-    """
 
     print("\n" + "=" * 50)
     print("                TESTER ROLE")
@@ -189,21 +161,18 @@ def real_time_tester(state: CrewState):
 
     print("[Tester] Generating test scenarios...")
 
-    # Generate test cases
     test_cases = generate_test_cases.invoke(task)
 
     cases_str = str(test_cases)
 
     print("[Tester] Executing generated code...")
 
-    # Execute generated code
     execution_result = run_python_code.invoke(
         {
             "code": state["code"]
         }
     )
 
-    # Create report
     report = (
         "### EXECUTION OUTPUT:\n"
         f"{execution_result}\n\n"
@@ -220,9 +189,6 @@ def real_time_tester(state: CrewState):
 
 
 def manager_decision_node(state: CrewState):
-    """
-    Manager node.
-    """
 
     print("\n" + "=" * 50)
     print("               MANAGER ROLE")
@@ -236,9 +202,6 @@ def manager_decision_node(state: CrewState):
 
 
 def archiver_node(state: CrewState):
-    """
-    Archiver node.
-    """
 
     print("\n" + "=" * 50)
     print("              ARCHIVER ROLE")
@@ -252,7 +215,7 @@ def archiver_node(state: CrewState):
 
 
 # ============================================================
-# 6. GRAPH CONSTRUCTION
+# 5. GRAPH CONSTRUCTION
 # ============================================================
 
 workflow = StateGraph(CrewState)
@@ -263,34 +226,39 @@ workflow.add_node("tester", real_time_tester)
 workflow.add_node("manager_decision", manager_decision_node)
 workflow.add_node("archiver", archiver_node)
 
-
-# START → task input
 workflow.add_edge(START, "task_input")
-
-# task input → developer
 workflow.add_edge("task_input", "developer")
-
-# developer → tester
 workflow.add_edge("developer", "tester")
-
-# tester → manager
 workflow.add_edge("tester", "manager_decision")
-
-# manager → archiver
 workflow.add_edge("manager_decision", "archiver")
-
-# archiver → END
 workflow.add_edge("archiver", END)
 
-
-# Compile LangGraph
 rt_app = workflow.compile()
 
 print("LangGraph workflow compiled successfully.")
 
 
 # ============================================================
-# 7. API REQUEST MODEL
+# 6. FASTAPI APPLICATION
+# ============================================================
+
+app = FastAPI(title="LangGraph Coding Agent")
+
+
+# ============================================================
+# 7. LANGSERVE PLAYGROUND
+# ============================================================
+
+add_routes(
+    app,
+    rt_app,
+    path="/agent",
+    playground_type="default"
+)
+
+
+# ============================================================
+# 8. API REQUEST MODEL
 # ============================================================
 
 class CodingRequest(BaseModel):
@@ -298,11 +266,12 @@ class CodingRequest(BaseModel):
 
 
 # ============================================================
-# 8. HEALTH CHECK
+# 9. HEALTH CHECK
 # ============================================================
 
 @app.get("/")
 def root():
+
     return {
         "status": "running",
         "message": "LangGraph Coding Agent is running"
@@ -310,7 +279,7 @@ def root():
 
 
 # ============================================================
-# 9. CODING ENDPOINT
+# 10. CODING ENDPOINT
 # ============================================================
 
 @app.post("/run")
