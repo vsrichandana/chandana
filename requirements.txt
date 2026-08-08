@@ -4,3 +4,4 @@ langchain-core
 langgraph
 langchain-google-genai
 langserve
+sse-starlette
