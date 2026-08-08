@@ -19,6 +19,20 @@ from langgraph.graph import StateGraph, START, END
 # ============================================================
 
 app = FastAPI(title="LangGraph Coding Agent")
+formatted_agent_chain = (
+    RunnableLambda(format_for_agent)
+    | agent
+    | RunnableLambda(extract_text_response)
+).with_types(input_type=AgentInput, output_type=str)
+
+# --- 3. FastAPI App ---
+app = FastAPI(title="Indian Weather & Cinema Agent API")
+
+add_routes(
+    app,
+    formatted_agent_chain,
+    path="/agent",
+    playground_type="default")
 
 
 # ============================================================
