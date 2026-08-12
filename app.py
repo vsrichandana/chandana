@@ -1,3 +1,4 @@
+````python
 import os
 import io
 import sys
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_core.tools import tool
+from langchain_core.runnables import RunnableLambda
+
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from langgraph.graph import StateGraph, START, END
@@ -25,6 +28,7 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
     raise ValueError("GOOGLE_API_KEY environment variable is not set.")
+
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.1-flash-lite-preview",
@@ -78,7 +82,11 @@ def run_python_code(code: str) -> str:
     finally:
         sys.stdout = old_stdout
 
-    return result.strip() if result.strip() else "Success (no terminal output)"
+    return (
+        result.strip()
+        if result.strip()
+        else "Success (no terminal output)"
+    )
 
 
 @tool
@@ -95,7 +103,11 @@ def generate_test_cases(task_description: str) -> str:
 
     response = llm.invoke(prompt)
 
-    return response.content if hasattr(response, "content") else str(response)
+    return (
+        response.content
+        if hasattr(response, "content")
+        else str(response)
+    )
 
 
 # ============================================================
@@ -220,18 +232,62 @@ def archiver_node(state: CrewState):
 
 workflow = StateGraph(CrewState)
 
-workflow.add_node("task_input", task_input_node)
-workflow.add_node("developer", real_time_developer)
-workflow.add_node("tester", real_time_tester)
-workflow.add_node("manager_decision", manager_decision_node)
-workflow.add_node("archiver", archiver_node)
+workflow.add_node(
+    "task_input",
+    task_input_node
+)
 
-workflow.add_edge(START, "task_input")
-workflow.add_edge("task_input", "developer")
-workflow.add_edge("developer", "tester")
-workflow.add_edge("tester", "manager_decision")
-workflow.add_edge("manager_decision", "archiver")
-workflow.add_edge("archiver", END)
+workflow.add_node(
+    "developer",
+    real_time_developer
+)
+
+workflow.add_node(
+    "tester",
+    real_time_tester
+)
+
+workflow.add_node(
+    "manager_decision",
+    manager_decision_node
+)
+
+workflow.add_node(
+    "archiver",
+    archiver_node
+)
+
+
+workflow.add_edge(
+    START,
+    "task_input"
+)
+
+workflow.add_edge(
+    "task_input",
+    "developer"
+)
+
+workflow.add_edge(
+    "developer",
+    "tester"
+)
+
+workflow.add_edge(
+    "tester",
+    "manager_decision"
+)
+
+workflow.add_edge(
+    "manager_decision",
+    "archiver"
+)
+
+workflow.add_edge(
+    "archiver",
+    END
+)
+
 
 rt_app = workflow.compile()
 
@@ -242,31 +298,90 @@ print("LangGraph workflow compiled successfully.")
 # 6. FASTAPI APPLICATION
 # ============================================================
 
-app = FastAPI(title="LangGraph Coding Agent")
+app = FastAPI(
+    title="LangGraph Coding Agent"
+)
 
 
 # ============================================================
-# 7. LANGSERVE PLAYGROUND
+# 7. FUNCTION FOR LANGSERVE PLAYGROUND
+# ============================================================
+
+def run_graph_for_playground(task: str) -> str:
+
+    """
+    Convert a simple string input from the LangServe playground
+    into the CrewState expected by the LangGraph.
+    """
+
+    initial_state: CrewState = {
+
+        "messages": [
+            HumanMessage(content=task)
+        ],
+
+        "next_step": None,
+
+        "code": None,
+
+        "report": None,
+    }
+
+    result = rt_app.invoke(
+        initial_state,
+        config={
+            "recursion_limit": 50
+        }
+    )
+
+    generated_code = result.get(
+        "code",
+        ""
+    )
+
+    report = result.get(
+        "report",
+        ""
+    )
+
+    return (
+        "GENERATED CODE:\n\n"
+        f"{generated_code}\n\n"
+        "REPORT:\n\n"
+        f"{report}"
+    )
+
+
+# Convert our Python function into a LangChain Runnable
+
+agent_runnable = RunnableLambda(
+    run_graph_for_playground
+)
+
+
+# ============================================================
+# 8. LANGSERVE PLAYGROUND
 # ============================================================
 
 add_routes(
     app,
-    rt_app,
+    agent_runnable,
     path="/agent",
     playground_type="default"
 )
 
 
 # ============================================================
-# 8. API REQUEST MODEL
+# 9. API REQUEST MODEL
 # ============================================================
 
 class CodingRequest(BaseModel):
+
     task: str
 
 
 # ============================================================
-# 9. HEALTH CHECK
+# 10. HEALTH CHECK
 # ============================================================
 
 @app.get("/")
@@ -279,18 +394,42 @@ def root():
 
 
 # ============================================================
-# 10. CODING ENDPOINT
+# 11. TEST GRAPH DIRECTLY
+# ============================================================
+
+@app.get("/test-agent")
+def test_agent():
+
+    result = run_graph_for_playground(
+        "Write a Python program to reverse a string."
+    )
+
+    return {
+        "result": result
+    }
+
+
+# ============================================================
+# 12. CUSTOM CODING ENDPOINT
 # ============================================================
 
 @app.post("/run")
-def run_agent(request: CodingRequest):
+def run_agent(
+    request: CodingRequest
+):
 
     initial_state: CrewState = {
+
         "messages": [
-            HumanMessage(content=request.task)
+            HumanMessage(
+                content=request.task
+            )
         ],
+
         "next_step": None,
+
         "code": None,
+
         "report": None,
     }
 
@@ -302,7 +441,37 @@ def run_agent(request: CodingRequest):
     )
 
     return {
+
         "task": request.task,
-        "generated_code": result.get("code"),
-        "report": result.get("report"),
+
+        "generated_code": result.get(
+            "code"
+        ),
+
+        "report": result.get(
+            "report"
+        ),
     }
+
+
+# ============================================================
+# 13. START SERVER
+# ============================================================
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            8000
+        )
+    )
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port
+    )
+````
